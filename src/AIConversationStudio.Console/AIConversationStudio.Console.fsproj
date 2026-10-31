@@ -4,6 +4,7 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="OpenAICommand.fs" />
     <Compile Include="Program.fs" />
   </ItemGroup>
   <ItemGroup>

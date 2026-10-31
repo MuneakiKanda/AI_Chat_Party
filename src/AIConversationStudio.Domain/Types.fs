@@ -39,6 +39,10 @@ type ChatError =
     | QuotaExceeded of string
     | AuthenticationFailed
     | ModelNotAvailable of string
+    | TimeoutSendStateUnknown
+    | TransportFailed
+    | InvalidResponse
+    | CredentialUnavailable
     | TimedOutAfterSend
     | StreamInterrupted
     | Cancelled

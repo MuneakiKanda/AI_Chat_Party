@@ -8,6 +8,7 @@
     <Compile Include="HistoryFormatter.fs" />
     <Compile Include="ResponseNormalizer.fs" />
     <Compile Include="AdapterRegistry.fs" />
+    <Compile Include="EmergencyStopController.fs" />
     <Compile Include="ApiGateway.fs" />
     <Compile Include="ConversationOrchestrator.fs" />
   </ItemGroup>

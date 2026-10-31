@@ -49,3 +49,68 @@ T15/T17の正式スケジューラ経由の検証はSlice 4、T12/T16/T21の実A
 - 人間の投稿はRunning中のみ受け付ける。Draining / Stoppedでは例外で拒否し、履歴・連番を変更しない。
 - 接続の存在確認はAttempt予約前に行う。未登録接続は枠を消費せず、予約後の通信失敗やキャンセルは消費する。
 - 回帰テストを含む全69件が成功。
+
+
+## Slice 2：OpenAI（実装済み、実接続検証は未実施）
+
+- `OpenAIAdapter`：既存の `IProviderAdapter` を維持。注入可能なHttpClientで非ストリーミングの
+  Chat Completionsを呼び出す。モデルIDは各リクエストの設定値を使用し、代替や再試行をしない。
+- `OpenAIConnection`：ConnectionId・CredentialRef・公式HTTPSエンドポイントのみ保持。
+  OpenAICompatibleは範囲外。APIキーは送信直前にInfrastructure内の `ICredentialStore` から取得する。
+- `WindowsCredentialStore`：Windows Generic Credentials（現在のOSユーザー、ローカルマシン永続化）。
+  Win32のCredReadW/CredWriteWを利用。非Windowsでは明示的なエラーにし、平文ファイル・環境変数へ代替しない。
+- アプリ指示をsystem、ルーム指示・人格を明示的な区切りと優先順位付きのdeveloperメッセージへ変換。
+  同一レイヤー内はルーム→人格の順。Selfだけassistant、Othersと台本はuser。
+  この割当が指定モデルで利用可能であることは必要条件であり、モデルが指示優先順位を守る保証ではない。
+- 応答は最終的なassistantのテキスト（finish_reason=stop）のみ受け付ける。
+  不正JSON・未完了・ツール応答はInvalidResponse。使用量不明は欠損のまま扱う。
+- `EmergencyStopController`：予約を閉じepoch更新→キャンセル通知。
+  同じ経路を実APIコマンドのCtrl+Cと決定的テストで使用する。
+- 実APIコマンドはモデルと接続先を事前表示し、`--confirm-api-call` がなければ課金通信しない。
+  明示確認後も1 Generationのみ実行し、Gatewayの100 Attempt上限を維持する。
+
+### エラー分類
+
+| 証拠 | 結果 |
+| --- | --- |
+| 呼び出し元トークンのキャンセル | Cancelled |
+| DNS解決エラー | ConnectionFailedBeforeSend（送信前と断定できる範囲のみ） |
+| 応答ヘッダー受信後のOperationCanceledException、呼び出し元は未キャンセル | TimedOutAfterSend |
+| 応答ヘッダー未受信のOperationCanceledException、呼び出し元は未キャンセル | TimeoutSendStateUnknown |
+| 401/403 | AuthenticationFailed |
+| 429 | RateLimited（Retry-Afterのdeltaを欠損許容で保持、自動再試行なし） |
+| エラーコードinsufficient_quota | QuotaExceeded |
+| エラーコードmodel_not_found | ModelNotAvailable |
+| 接続リセット、一般の接続エラー、他のHTTPエラー | TransportFailed（送信状態を断定しない） |
+| 資格情報が取得不可 | CredentialUnavailable |
+| 成功応答の形式が不正／未完了 | InvalidResponse |
+
+ヘッダー未受信は「未送信」の証拠にならない。HttpClientの観測からProviderの実処理・課金状況を
+断定しない。Gatewayも呼び出し元未キャンセルのOperationCanceledExceptionをCancelledにしない。
+AttemptSent/SentCountは既存契約上のAdapter呼び出し開始を示し、ネットワークへのバイト送信の証拠ではない。
+資格情報取得に失敗した場合も、Gateway予約後なら保守的に枠を消費する。
+
+### 検証結果と制限
+
+- .NET 10 / Linuxでロック付きrestore、Release build（警告0）、全101テスト成功（失敗0）。
+  Slice 1の69件を維持し、HTTPスタブと送信形式・エラー・秘密情報非記録・緊急停止を32件追加。
+- 通常ログ／診断JSON／エラー記録に合成キー・人格・会話が含まれないことを検証。
+  内部例外には合成キーを注入し、公開結果には汎用のエラー分類だけが残ることを確認。
+- タイムアウトや停止はTaskCompletionSourceと例外注入で再現し、実時間待機・課金を使わない。
+- プレビュー（実API未送信）とSlice 1のMockコンソールを実行確認済み。
+- **実API接続確認は未実施**：この環境はLinuxでWindows資格情報ストアを利用できず、APIキーの登録もない。
+  OpenAIへの実ネットワーク到達性・モデル利用権限・課金・実応答は未確認。
+- Windowsネイティブ資格情報ストアはコンパイル確認まで。Windows実機で登録・読取・更新・失敗時の挙動を
+  [手順](openai-smoke-test.md) に従って検証する必要がある。
+
+### レビュー対象の実装提案・未決事項
+
+- 初回のAPIとしてChat Completions、system/developerの割当を採用。指定モデルがこの形式に対応することが必要。
+  非対応時に別API・ロール・モデルへ自動変更しない。このAPI／割当の採用可否は今回のレビュー対象。
+- タイムアウト秒数は未決。HttpClient既定100秒を暗黙の仕様にせず、確認コマンドでは未指定時に自動締切を
+  設けない（Timeout.InfiniteTimeSpan）。利用者が明示指定する `--timeout-seconds` は許可する。
+  既定値の確定は設計側へ委ねる。未指定時はCtrl+Cによる停止が必要になりうる。
+- 再試行回数・待機時間は引き続き未決かつ無効。絶対時刻のRetry-Afterから待機時間を算出する処理も未実装。
+- Windows以外の資格情報ストア、Provider別モデル能力判定、2社目、ツール、ストリーミング、UIは未実装。
+- 次Sliceには実機確認結果、モデル互換性、資格情報OS展開を引き継ぐ。
+  イベント配送保証・監査処理の耐障害性（Outboxを含む）は前PR同様の後続課題。

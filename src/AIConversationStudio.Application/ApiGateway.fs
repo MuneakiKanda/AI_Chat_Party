@@ -40,7 +40,8 @@ type ApiGateway(budget: IAttemptBudget, registry: IAdapterRegistry, tracker: IGe
                             tracker.RecordAttempt(AttemptEvent.Sent(request.GenerationId, attempt))
                             return! adapter.Send(request, ct)
                         with
-                        | :? OperationCanceledException -> return Error ChatError.Cancelled
+                        | :? OperationCanceledException when ct.IsCancellationRequested -> return Error ChatError.Cancelled
+                        | :? OperationCanceledException -> return Error ChatError.TimeoutSendStateUnknown
                         | _ -> return Error(ChatError.Unexpected "Provider adapter failed.")
                     }
                     let communication =
