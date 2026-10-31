@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "FSharp.Core": {
+        "type": "Direct",
+        "requested": "[10.1.403, )",
+        "resolved": "10.1.403",
+        "contentHash": "TWtcvx8ZryidjqFb84j8iu2akDNpFr8pSWBbuFDMI5xRZrfCjJXsyOkO/bH5TTElSupHxgZTYi1I5Fd7InqlDQ=="
+      },
+      "aiconversationstudio.application": {
+        "type": "Project",
+        "dependencies": {
+          "AIConversationStudio.Domain": "[1.0.0, )",
+          "FSharp.Core": "[10.1.403, )"
+        }
+      },
+      "aiconversationstudio.domain": {
+        "type": "Project",
+        "dependencies": {
+          "FSharp.Core": "[10.1.403, )"
+        }
+      },
+      "aiconversationstudio.infrastructure": {
+        "type": "Project",
+        "dependencies": {
+          "AIConversationStudio.Application": "[1.0.0, )",
+          "AIConversationStudio.Domain": "[1.0.0, )",
+          "FSharp.Core": "[10.1.403, )"
+        }
+      }
+    }
+  }
+}

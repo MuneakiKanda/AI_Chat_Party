@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="InMemoryStore.fs" />
+    <Compile Include="MockAdapter.fs" />
+    <Compile Include="Diagnostics.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../AIConversationStudio.Domain/AIConversationStudio.Domain.fsproj" />
+    <ProjectReference Include="../AIConversationStudio.Application/AIConversationStudio.Application.fsproj" />
+  </ItemGroup>
+</Project>
