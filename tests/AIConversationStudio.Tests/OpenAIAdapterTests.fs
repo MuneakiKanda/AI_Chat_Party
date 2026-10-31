@@ -98,9 +98,12 @@ module OpenAIAdapterTests =
     [<InlineData(429, "rate_limit_exceeded", "rate")>]
     [<InlineData(429, "insufficient_quota", "quota")>]
     [<InlineData(404, "model_not_found", "model")>]
-    [<InlineData(404, "unknown", "transport")>]
-    [<InlineData(500, "server_error", "transport")>]
-    [<InlineData(302, "redirect", "transport")>]
+    [<InlineData(400, "unknown", "rejected")>]
+    [<InlineData(404, "unknown", "rejected")>]
+    [<InlineData(422, "unknown", "rejected")>]
+    [<InlineData(500, "server_error", "server")>]
+    [<InlineData(503, "unknown", "server")>]
+    [<InlineData(302, "redirect", "unexpected")>]
     let ``http errors are sanitized classified and never retried`` status code expected = task {
         let mutable calls = 0
         use http = client (fun _ _ ->
@@ -114,8 +117,10 @@ module OpenAIAdapterTests =
         match expected, error with
         | "auth", ChatError.AuthenticationFailed
         | "quota", ChatError.QuotaExceeded _
-        | "model", ChatError.ModelNotAvailable _
-        | "transport", ChatError.TransportFailed -> ()
+        | "model", ChatError.ModelNotAvailable _ -> ()
+        | "rejected", ChatError.ProviderRejected actual
+        | "server", ChatError.ProviderServerError actual -> Assert.Equal(status, actual)
+        | "unexpected", ChatError.Unexpected _ -> ()
         | "rate", ChatError.RateLimited delay -> Assert.Equal(Some(TimeSpan.FromSeconds 9.), delay)
         | _ -> failwithf "Unexpected classification: %A" error
         Assert.DoesNotContain(syntheticKey, sprintf "%A" error)
@@ -451,4 +456,123 @@ module OpenAIAdapterTests =
         Assert.Equal(1, time.CreatedTimers)
         Assert.Equal(0, time.ActiveTimers)
         time.Advance(TimeSpan.FromSeconds 10.)
+    }
+
+    let private runWithDiagnostics http = task {
+        let clock = { new IClock with member _.UtcNow = DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero) }
+        let store = InMemoryStore(clock) :> IConversationStore
+        let session, room = SessionId(Guid.NewGuid()), RoomId(Guid.NewGuid())
+        store.CreateSession(session, room, SessionLimits.defaults)
+        let tracker = GenerationTracker()
+        let participant = { Character = { Id = CharacterId(Guid.NewGuid()); Name = "Synthetic"; PersonaMarkdown = "private-persona"
+                                          DefaultModel = { ConnectionId = connection.Id; ModelId = request.ModelId } }
+                            ModelOverride = None; AdditionalInstructions = None }
+        let config = { SessionId = session; RoomId = room; Participants = [participant]
+                       RoomInstructions = "test"; HistoryFormat = HistoryFormat.NamedRoleMessages }
+        let ids = { new IIdGenerator with member _.NewId() = Guid.NewGuid() }
+        let provider = OpenAIAdapter(connection, credentials (Ok syntheticKey), http, diagnostics = tracker) :> IProviderAdapter
+        let runner = ConversationOrchestrator(config, store, ApiGateway(store, AdapterRegistry [connection.Id, provider], tracker), tracker, MessageEvents(), clock, ids)
+        let! record = runner.RunTurn(participant.Character.Id, CancellationToken.None)
+        Assert.Equal(record, Assert.Single tracker.Records)
+        // Metadata is consumed once, not retained as unbounded per-request state.
+        Assert.Equal(None, (tracker :> IGenerationTracker).TakeProviderResponse record.GenerationId)
+        return record
+    }
+
+    [<Theory>]
+    [<InlineData(400, "context_length_exceeded", "invalid_request_error", "context_length_exceeded", "invalid_request_error")>]
+    [<InlineData(404, "unknown-code", "unknown-type", "other", "other")>]
+    [<InlineData(422, "invalid_request_error", "invalid_request_error", "invalid_request_error", "invalid_request_error")>]
+    [<InlineData(500, "server_error", "server_error", "server_error", "server_error")>]
+    [<InlineData(503, "unknown-code", "unknown-type", "other", "other")>]
+    [<InlineData(401, "invalid_api_key", "authentication_error", "invalid_api_key", "authentication_error")>]
+    [<InlineData(429, "rate_limit_exceeded", "rate_limit_error", "rate_limit_exceeded", "rate_limit_error")>]
+    [<InlineData(429, "insufficient_quota", "insufficient_quota", "insufficient_quota", "insufficient_quota")>]
+    [<InlineData(404, "model_not_found", "invalid_request_error", "model_not_found", "invalid_request_error")>]
+    let ``diagnostic JSON contains HTTP status and only allowlisted provider error identifiers`` status code errorType expectedCode expectedType = task {
+        use http = client (fun _ _ ->
+            let body = JsonSerializer.Serialize {| error = {| code = code; ``type`` = errorType; message = syntheticKey |} |}
+            let result = response status body
+            result.Headers.TryAddWithoutValidation("x-request-id", "req_123-ABC") |> ignore
+            Task.FromResult result)
+        let! record = runWithDiagnostics http
+        let log = SafeRequestLogger.format record
+        use json = JsonDocument.Parse log
+        let root = json.RootElement
+        Assert.Equal(status, root.GetProperty("httpStatusCode").GetInt32())
+        Assert.Equal(expectedCode, root.GetProperty("providerErrorCode").GetString())
+        Assert.Equal(expectedType, root.GetProperty("providerErrorType").GetString())
+        Assert.Equal("req_123-ABC", root.GetProperty("providerRequestId").GetString())
+        Assert.DoesNotContain(syntheticKey, log)
+        Assert.DoesNotContain("unknown-code", log)
+        Assert.DoesNotContain("unknown-type", log)
+        Assert.Equal(PostingResult.Failed, record.Posting)
+        Assert.Equal(1, record.AttemptCount)
+        Assert.Equal(0, record.RetryCount)
+        if status >= 500 then
+            Assert.Equal(CommunicationResult.Failed(ChatError.ProviderServerError status), record.Communication)
+        elif status = 400 || status = 422 || (status = 404 && expectedCode = "other") then
+            Assert.Equal(CommunicationResult.Failed(ChatError.ProviderRejected status), record.Communication)
+    }
+
+    [<Theory>]
+    [<InlineData(0)>]
+    [<InlineData(1)>]
+    [<InlineData(2)>]
+    [<InlineData(3)>]
+    [<InlineData(4)>]
+    [<InlineData(5)>]
+    [<InlineData(6)>]
+    [<InlineData(7)>]
+    let ``request id must be one ASCII identifier of at most 128 characters`` mode = task {
+        let ids =
+            match mode with
+            | 0 -> [String('A', 128)]
+            | 1 -> [String('A', 129)]
+            | 2 -> ["req invalid"]
+            | 3 -> ["req:invalid"]
+            | 4 -> ["req_日本語"]
+            | 5 -> ["req_one"; "req_two"]
+            | 6 -> ["req_bad\r\nInjected"]
+            | _ -> [""]
+        use http = client (fun _ _ ->
+            let body = JsonSerializer.Serialize {| error = {| code = syntheticKey; ``type`` = syntheticKey; message = syntheticKey |} |}
+            let result = response 422 body
+            result.Headers.TryAddWithoutValidation("x-request-id", ids) |> ignore
+            Task.FromResult result)
+        let! record = runWithDiagnostics http
+        let metadata = record.ProviderResponse.Value
+        Assert.Equal(Some "other", metadata.ErrorCode)
+        Assert.Equal(Some "other", metadata.ErrorType)
+        let log = SafeRequestLogger.format record
+        Assert.DoesNotContain(syntheticKey, log)
+        use json = JsonDocument.Parse log
+        let mutable value = Unchecked.defaultof<JsonElement>
+        if mode = 0 then Assert.Equal(ids.Head, json.RootElement.GetProperty("providerRequestId").GetString())
+        else
+            Assert.Equal(None, metadata.RequestId)
+            Assert.False(json.RootElement.TryGetProperty("providerRequestId", &value))
+    }
+
+    [<Fact>]
+    let ``no HTTP response is a transport failure without fabricated status metadata`` () = task {
+        use http = client (fun _ _ -> Task.FromException<HttpResponseMessage>(new HttpRequestException(syntheticKey)))
+        let! record = runWithDiagnostics http
+        Assert.Equal(CommunicationResult.Failed ChatError.TransportFailed, record.Communication)
+        Assert.Equal(None, record.ProviderResponse)
+        use json = JsonDocument.Parse(SafeRequestLogger.format record)
+        let mutable value = Unchecked.defaultof<JsonElement>
+        Assert.False(json.RootElement.TryGetProperty("httpStatusCode", &value))
+    }
+
+    [<Fact>]
+    let ``HTTP server status survives a body read failure`` () = task {
+        use http = client (fun _ _ ->
+            let result = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+            result.Content <- new FailingContent(new HttpRequestException(syntheticKey))
+            Task.FromResult result)
+        let! record = runWithDiagnostics http
+        Assert.Equal(CommunicationResult.Failed(ChatError.ProviderServerError 503), record.Communication)
+        Assert.Equal(503, record.ProviderResponse.Value.StatusCode)
+        Assert.DoesNotContain(syntheticKey, SafeRequestLogger.format record)
     }

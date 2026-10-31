@@ -26,6 +26,9 @@ type IConversationStore =
     abstract SetResting: SessionId * CharacterId * bool -> unit
     abstract Stop: SessionId * StopReason -> unit
 type IGenerationTracker =
+    // Adapters supply sanitized metadata only; application code does not parse provider payloads.
+    abstract RecordProviderResponse: GenerationId * ProviderResponseDiagnostics -> unit
+    abstract TakeProviderResponse: GenerationId -> ProviderResponseDiagnostics option
     abstract RecordAttempt: AttemptEvent -> unit
     abstract Complete: GenerationRecord -> unit
 type IMessageEvents = abstract Publish: MessagePosted -> unit

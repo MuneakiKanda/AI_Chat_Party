@@ -19,6 +19,8 @@ module SafeRequestLogger =
         | ChatError.ModelNotAvailable _ -> "ModelNotAvailable"
         | ChatError.TimeoutSendStateUnknown -> "TimeoutSendStateUnknown"
         | ChatError.TransportFailed -> "TransportFailed"
+        | ChatError.ProviderRejected _ -> "ProviderRejected"
+        | ChatError.ProviderServerError _ -> "ProviderServerError"
         | ChatError.InvalidResponse -> "InvalidResponse"
         | ChatError.CredentialUnavailable -> "CredentialUnavailable"
         | ChatError.TimedOutAfterSend -> "TimedOutAfterSend"
@@ -38,7 +40,19 @@ module SafeRequestLogger =
             | CommunicationResult.Completed -> "Completed"
             | CommunicationResult.Cancelled -> "Cancelled"
             | CommunicationResult.NotSent -> "NotSent"
-        JsonSerializer.Serialize {|
+        let statusCode =
+            match record.ProviderResponse with
+            | Some response -> Nullable response.StatusCode
+            | None ->
+                match record.Communication with
+                | CommunicationResult.Failed(ChatError.ProviderRejected status)
+                | CommunicationResult.Failed(ChatError.ProviderServerError status) -> Nullable status
+                | _ -> Nullable()
+        JsonSerializer.Serialize({|
+            httpStatusCode = statusCode
+            providerErrorCode = record.ProviderResponse |> Option.bind _.ErrorCode |> Option.toObj
+            providerErrorType = record.ProviderResponse |> Option.bind _.ErrorType |> Option.toObj
+            providerRequestId = record.ProviderResponse |> Option.bind _.RequestId |> Option.toObj
             generationId = generation
             sessionId = session
             roomId = room
@@ -60,14 +74,20 @@ module SafeRequestLogger =
             notification = string record.Notification
             posting = sprintf "%A" record.Posting
             normalization = sprintf "%A" record.Normalization
-        |}
+        |}, JsonSerializerOptions(DefaultIgnoreCondition = Serialization.JsonIgnoreCondition.WhenWritingNull))
 
 type GenerationTracker() =
+    let responses = ConcurrentDictionary<GenerationId, ProviderResponseDiagnostics>()
     let records = ConcurrentQueue<GenerationRecord>()
     let attempts = ConcurrentQueue<AttemptEvent>()
     member _.Records = records.ToArray() |> Array.toList
     member _.Attempts = attempts.ToArray() |> Array.toList
     interface IGenerationTracker with
+        member _.RecordProviderResponse(id, response) = responses[id] <- response
+        member _.TakeProviderResponse id =
+            match responses.TryRemove id with
+            | true, response -> Some response
+            | _ -> None
         member _.RecordAttempt value = attempts.Enqueue value
         member _.Complete value = records.Enqueue value
 

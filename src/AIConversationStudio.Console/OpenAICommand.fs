@@ -76,7 +76,8 @@ let private run options = task {
         let session, room = SessionId(ids.NewId()), RoomId(ids.NewId())
         let connection = { Id = ConnectionId(ids.NewId()); CredentialRef = options.Reference; Endpoint = OpenAIHttp.endpoint }
         use http = OpenAIHttp.createClient()
-        let adapter = OpenAIAdapter(connection, WindowsCredentialStore(), http, ?requestTimeout = options.Timeout) :> IProviderAdapter
+        let tracker = GenerationTracker()
+        let adapter = OpenAIAdapter(connection, WindowsCredentialStore(), http, ?requestTimeout = options.Timeout, diagnostics = tracker) :> IProviderAdapter
         let participant = {
             Character = { Id = CharacterId(ids.NewId()); Name = "先生"; PersonaMarkdown = "簡潔に答える先生。"
                           DefaultModel = { ConnectionId = connection.Id; ModelId = ModelId options.Model } }
@@ -85,7 +86,6 @@ let private run options = task {
         let store = InMemoryStore(clock) :> IConversationStore
         store.CreateSession(session, room, SessionLimits.defaults)
         store.AddHumanMessage(session, "あなた", "日本語で短く挨拶してください。") |> ignore
-        let tracker = GenerationTracker()
         let gateway = ApiGateway(store, AdapterRegistry [connection.Id, adapter], tracker)
         let config = { SessionId = session; RoomId = room; Participants = [participant]
                        RoomInstructions = "接続確認のため、一度だけ返答してください。"; HistoryFormat = options.Format }

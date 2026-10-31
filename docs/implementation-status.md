@@ -81,10 +81,14 @@ T15/T17の正式スケジューラ経由の検証はSlice 4、T12/T16/T21の実A
 | 429 | RateLimited（Retry-Afterのdeltaを欠損許容で保持、自動再試行なし） |
 | エラーコードinsufficient_quota | QuotaExceeded |
 | エラーコードmodel_not_found | ModelNotAvailable |
-| 接続リセット、一般の接続エラー、他のHTTPエラー | TransportFailed（送信状態を断定しない） |
+| 既知の専用分類に該当しない4xx（400/404/422等） | ProviderRejected(statusCode) |
+| 既知の専用分類に該当しない5xx | ProviderServerError(statusCode) |
+| 未追従の3xxなど、上記以外の非成功HTTP応答 | Unexpected（HTTPステータスは診断に保持） |
+| HTTP応答を受け取れなかった接続リセット等の通信失敗 | TransportFailed（送信状態を断定しない） |
 | 資格情報が取得不可 | CredentialUnavailable |
 | 成功応答の形式が不正／未完了 | InvalidResponse |
 
+HTTPステータスの受信が示すのは、サーバーに届いてHTTP応答が返ったことだけであり、モデルの処理や課金の有無は断定しない。
 ヘッダー未受信は「未送信」の証拠にならない。HttpClientの観測からProviderの実処理・課金状況を
 断定しない。Gatewayも呼び出し元未キャンセルのOperationCanceledExceptionをCancelledにしない。
 AttemptSent/SentCountは既存契約上のAdapter呼び出し開始を示し、ネットワークへのバイト送信の証拠ではない。
@@ -129,3 +133,38 @@ AttemptSent/SentCountは既存契約上のAdapter呼び出し開始を示し、�
   締切未指定時にタイマーがないこと、成功時のタイマー破棄も検証。
 - 規定のタイムアウト秒数は引き続き未決で、未指定時に自動締切を追加しない。
 - 回帰5件を含む全106件成功。Windows／実API接続の検証状況は前述どおり未実施。
+
+
+## PR #3 非ブロッキング指摘反映：HTTP分類と安全な診断
+
+- 既知の認証・レート・クォータ・モデルエラー分類を維持し、それ以外の4xxを
+  `ProviderRejected of statusCode`、5xxを `ProviderServerError of statusCode` に分離。
+  `TransportFailed` はHTTP応答未受信の通信失敗だけに使用する。
+  エラーレスポンスの本文取得に失敗しても、受信済みステータスを保持する。
+- HTTPステータスの観測からモデルの処理・完了・課金の有無は推測しない。
+- Adapterが検証したメタデータを生成ID単位でTrackerへ渡し、生成記録と診断JSONへ反映する。
+  生成終了時に一時メタデータを取り出して削除する。IProviderAdapterのSend契約は維持。
+- 診断JSONの `httpStatusCode` は受信済みの場合だけ記録し、応答がない場合は捏造しない。
+  `providerErrorCode` / `providerErrorType` は以下の完全一致リストを使用する。
+  リスト外・欠損・不正形式は `other`。OpenAIの `message` は一切記録しない。
+
+| フィールド | 記録を許可する値 |
+| --- | --- |
+| code | invalid_api_key, insufficient_quota, model_not_found, rate_limit_exceeded, permission_denied, context_length_exceeded, invalid_request_error, server_error |
+| type | invalid_request_error, authentication_error, permission_error, rate_limit_error, insufficient_quota, server_error |
+
+- `providerRequestId` は応答ヘッダー `x-request-id` が単一値で、ASCIIの英数字・ハイフン・アンダースコアだけからなる
+  1〜128文字のときだけ記録する。不正値・重複値・空値は記録しない。
+- 400、モデル不存在以外の404、422、500、503、未知のcode/type、不正request ID、本文取得失敗、
+  HTTP応答なしのケースを検証。全128件成功、失敗・スキップ0。
+
+### 後続Sliceへの申し送り（今回の実装修正対象外）
+
+- **送信計測の意味の整理**：AttemptSent / SentCountはAdapter呼び出し開始を示し、HTTP送信の証拠ではない。
+  資格情報取得に失敗した場合でも1になる。後続Sliceで、AdapterがHTTP送信開始の有無を返す形への整理を検討する。
+- **PR #1・Normalizerのなりすまし判定**：行頭の空白、`**名前**：`、`## 名前`、閉じていない `「` を使う出力が
+  現在の判定をすり抜ける。引用保持との整合性・誤検知を含めて後続で仕様とテストを整備する。
+- **PR #1・READMEの整理**：クラウド作業環境専用の `/workspace` を使うSDK・PATH・キャッシュ等の設定を
+  README本体から環境別ドキュメントへ分離する。
+- **タイムアウト既定値の設計判断**：人が見ていない並列会話が始まる **Slice 4までに** 設計側で決める必要がある。
+  本PRでは未決の既定値を新しく確定しない。

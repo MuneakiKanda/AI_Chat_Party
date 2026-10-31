@@ -47,11 +47,34 @@ module private OpenAIWire =
         if element.ValueKind = JsonValueKind.Object && element.TryGetProperty(name, &value) then Some value else None
     let stringProperty name element =
         tryProperty name element |> Option.bind (fun v -> if v.ValueKind = JsonValueKind.String then Some(v.GetString()) else None)
-    let errorCode body =
+    // Only these exact constants can enter diagnostics. Raw code/type/message never leave this module.
+    let knownCodes = set ["invalid_api_key"; "insufficient_quota"; "model_not_found"; "rate_limit_exceeded";
+                          "permission_denied"; "context_length_exceeded"; "invalid_request_error"; "server_error"]
+    let knownTypes = set ["invalid_request_error"; "authentication_error"; "permission_error";
+                          "rate_limit_error"; "insufficient_quota"; "server_error"]
+    let errorDetails body =
+        let keep known value = match value with Some text when Set.contains text known -> text | _ -> "other"
         try
             use json = JsonDocument.Parse(body: string)
-            tryProperty "error" json.RootElement |> Option.bind (stringProperty "code")
-        with _ -> None
+            let error = tryProperty "error" json.RootElement
+            keep knownCodes (error |> Option.bind (stringProperty "code")),
+            keep knownTypes (error |> Option.bind (stringProperty "type"))
+        with _ -> "other", "other"
+    let requestId (response: HttpResponseMessage) =
+        let mutable values = Unchecked.defaultof<seq<string>>
+        if response.Headers.TryGetValues("x-request-id", &values) then
+            match Seq.toList values with
+            | [value] when value.Length > 0 && value.Length <= 128
+                           && value |> Seq.forall (fun c -> (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+                                                           || (c >= '0' && c <= '9') || c = '-' || c = '_') -> Some value
+            | _ -> None
+        else None
+    let statusError status =
+        if status = 401 || status = 403 then ChatError.AuthenticationFailed
+        elif status = 429 then ChatError.RateLimited None
+        elif status >= 500 && status <= 599 then ChatError.ProviderServerError status
+        elif status >= 400 && status <= 499 then ChatError.ProviderRejected status
+        else ChatError.Unexpected "Unexpected HTTP response status."
     let parse body =
         try
             use json = JsonDocument.Parse(body: string)
@@ -79,7 +102,7 @@ module private OpenAIWire =
 
 /// HttpClient and credential lookup are injected; no SDK-specific logic leaks into Application.
 type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, http: HttpClient,
-                   ?requestTimeout: TimeSpan, ?timeProvider: TimeProvider) =
+                   ?requestTimeout: TimeSpan, ?timeProvider: TimeProvider, ?diagnostics: IGenerationTracker) =
     let time = defaultArg timeProvider TimeProvider.System
     do
         match requestTimeout with
@@ -95,6 +118,9 @@ type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, 
         member _.Parameters _ = []
         member _.Send(request, ct) = task {
             let mutable responseReceived = false
+            let mutable receivedStatus = None
+            let recordResponse metadata =
+                diagnostics |> Option.iter (fun tracker -> tracker.RecordProviderResponse(request.GenerationId, metadata))
             try
                 ct.ThrowIfCancellationRequested()
                 let (ModelId model) = request.ModelId
@@ -119,28 +145,42 @@ type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, 
                         use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token)
                         use! response = http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, linked.Token)
                         responseReceived <- true
+                        let status = int response.StatusCode
+                        receivedStatus <- Some status
+                        let metadata = {
+                            StatusCode = status; RequestId = OpenAIWire.requestId response
+                            ErrorCode = (if response.IsSuccessStatusCode then None else Some "other")
+                            ErrorType = (if response.IsSuccessStatusCode then None else Some "other")
+                        }
+                        recordResponse metadata
                         let! body = response.Content.ReadAsStringAsync(linked.Token)
                         // Also reject a late response from a handler that ignores cancellation.
                         linked.Token.ThrowIfCancellationRequested()
                         if response.IsSuccessStatusCode then return OpenAIWire.parse body
                         else
-                            let code = OpenAIWire.errorCode body
+                            let code, errorType = OpenAIWire.errorDetails body
+                            recordResponse { metadata with ErrorCode = Some code; ErrorType = Some errorType }
                             let error =
-                                match int response.StatusCode, code with
+                                match status, code with
                                 | (401 | 403), _ -> ChatError.AuthenticationFailed
-                                | _, Some "insufficient_quota" -> ChatError.QuotaExceeded "Provider quota exhausted."
-                                | _, Some "model_not_found" -> ChatError.ModelNotAvailable "Requested model unavailable."
+                                | _, "insufficient_quota" -> ChatError.QuotaExceeded "Provider quota exhausted."
+                                | _, "model_not_found" -> ChatError.ModelNotAvailable "Requested model unavailable."
                                 | 429, _ ->
                                     let retry = response.Headers.RetryAfter
                                     ChatError.RateLimited(if isNull retry then None elif retry.Delta.HasValue then Some retry.Delta.Value else None)
-                                | _ -> ChatError.TransportFailed
+                                | _ -> OpenAIWire.statusError status
                             return Error error
             with
             | :? OperationCanceledException when ct.IsCancellationRequested -> return Error ChatError.Cancelled
             | :? OperationCanceledException ->
                 return Error(if responseReceived then ChatError.TimedOutAfterSend else ChatError.TimeoutSendStateUnknown)
-            | :? HttpRequestException as ex when ex.HttpRequestError = HttpRequestError.NameResolutionError ->
+            | :? HttpRequestException as ex when not responseReceived && ex.HttpRequestError = HttpRequestError.NameResolutionError ->
                 return Error(ChatError.ConnectionFailedBeforeSend "Name resolution failed.")
-            | :? HttpRequestException -> return Error ChatError.TransportFailed
+            | :? HttpRequestException ->
+                return Error(
+                    match receivedStatus with
+                    | Some status when status >= 400 -> OpenAIWire.statusError status
+                    | Some _ -> ChatError.InvalidResponse
+                    | None -> ChatError.TransportFailed)
             | _ -> return Error(ChatError.Unexpected "OpenAI request failed.")
         }

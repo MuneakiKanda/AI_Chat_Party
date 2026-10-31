@@ -37,7 +37,7 @@ type ConversationOrchestrator(config: SessionConfiguration, store: IConversation
             StartedAt = clock.UtcNow; EndedAt = clock.UtcNow
             AttemptCount = 0; SentCount = 0; RetryCount = 0; ToolRoundTrips = 0
             Usage = Usage.unknown; Communication = CommunicationResult.NotSent
-            Normalization = None; Posting = PostingResult.Cancelled; Notification = NotificationResult.NotRequired
+            Normalization = None; Posting = PostingResult.Cancelled; Notification = NotificationResult.NotRequired; ProviderResponse = None
         }
         match store.BeginGeneration(config.SessionId, characterId, generationId) with
         | Error reason ->
@@ -100,7 +100,7 @@ type ConversationOrchestrator(config: SessionConfiguration, store: IConversation
                     | Some(Error ChatError.Cancelled) -> record <- { record with Posting = PostingResult.Cancelled }
                     | Some(Error _) -> record <- { record with Posting = PostingResult.Failed }
                     | None -> ()
-                record <- { record with EndedAt = clock.UtcNow }
+                record <- { record with EndedAt = clock.UtcNow; ProviderResponse = tracker.TakeProviderResponse generationId }
                 tracker.Complete record
                 return record
             finally

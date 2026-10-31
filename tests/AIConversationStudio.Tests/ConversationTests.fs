@@ -225,6 +225,8 @@ module ConversationTests =
         let fixture = standard (say "Never sent") (say "Unused")
         let cancellingTracker = {
             new IGenerationTracker with
+                member _.RecordProviderResponse(id, response) = (fixture.Tracker :> IGenerationTracker).RecordProviderResponse(id, response)
+                member _.TakeProviderResponse id = (fixture.Tracker :> IGenerationTracker).TakeProviderResponse id
                 member _.RecordAttempt event =
                     (fixture.Tracker :> IGenerationTracker).RecordAttempt event
                     match event with
