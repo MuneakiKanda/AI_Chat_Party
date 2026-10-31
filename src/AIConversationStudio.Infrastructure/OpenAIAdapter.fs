@@ -78,8 +78,14 @@ module private OpenAIWire =
         with _ -> Error ChatError.InvalidResponse
 
 /// HttpClient and credential lookup are injected; no SDK-specific logic leaks into Application.
-type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, http: HttpClient) =
+type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, http: HttpClient,
+                   ?requestTimeout: TimeSpan, ?timeProvider: TimeProvider) =
+    let time = defaultArg timeProvider TimeProvider.System
     do
+        match requestTimeout with
+        | Some timeout when timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > 4294967294. ->
+            invalidArg (nameof requestTimeout) "Request timeout must be positive and supported by CancellationTokenSource."
+        | _ -> ()
         let uri = connection.Endpoint
         if isNull uri || not uri.IsAbsoluteUri || uri.Scheme <> "https" || uri.Host <> "api.openai.com"
            || not uri.IsDefaultPort || uri.UserInfo <> "" || uri.Query <> "" || uri.Fragment <> ""
@@ -104,9 +110,18 @@ type OpenAIAdapter(connection: OpenAIConnection, credentials: ICredentialStore, 
                         use message = new HttpRequestMessage(HttpMethod.Post, connection.Endpoint)
                         message.Headers.Authorization <- AuthenticationHeaderValue("Bearer", secret)
                         message.Content <- new StringContent(OpenAIWire.payload request, Encoding.UTF8, "application/json")
-                        use! response = http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, ct)
+                        // One deadline spans sending, headers and the entire response body.
+                        // Keep caller cancellation separate for error classification.
+                        use deadline =
+                            match requestTimeout with
+                            | Some timeout -> new CancellationTokenSource(timeout, time)
+                            | None -> new CancellationTokenSource()
+                        use linked = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token)
+                        use! response = http.SendAsync(message, HttpCompletionOption.ResponseHeadersRead, linked.Token)
                         responseReceived <- true
-                        let! body = response.Content.ReadAsStringAsync(ct)
+                        let! body = response.Content.ReadAsStringAsync(linked.Token)
+                        // Also reject a late response from a handler that ignores cancellation.
+                        linked.Token.ThrowIfCancellationRequested()
                         if response.IsSuccessStatusCode then return OpenAIWire.parse body
                         else
                             let code = OpenAIWire.errorCode body

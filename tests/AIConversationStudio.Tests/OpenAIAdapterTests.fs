@@ -311,3 +311,144 @@ module OpenAIAdapterTests =
         let _, usage = sent result
         Assert.Equal(Usage.unknown, usage)
     }
+
+    /// One-shot timers used by CancellationTokenSource; time advances only on test commands.
+    type private ManualTimer(callback: TimerCallback, state: obj, dueTime: TimeSpan, now: unit -> TimeSpan) =
+        let gate = obj()
+        let mutable due = if dueTime = Timeout.InfiniteTimeSpan then None else Some(now() + dueTime)
+        let mutable disposed = false
+        member _.Active = lock gate (fun () -> not disposed && due.IsSome)
+        member _.Tick() =
+            let fire = lock gate (fun () ->
+                match due with
+                | Some at when not disposed && now() >= at -> due <- None; true
+                | _ -> false)
+            if fire then callback.Invoke state
+        interface ITimer with
+            member _.Change(dueTime, period) =
+                if period <> Timeout.InfiniteTimeSpan then invalidArg (nameof period) "Only one-shot timers are used."
+                lock gate (fun () ->
+                    if disposed then false
+                    else
+                        due <- if dueTime = Timeout.InfiniteTimeSpan then None else Some(now() + dueTime)
+                        true)
+            member _.Dispose() = lock gate (fun () -> disposed <- true; due <- None)
+            member this.DisposeAsync() = (this :> IDisposable).Dispose(); ValueTask.CompletedTask
+
+    type private ManualTime() =
+        inherit TimeProvider()
+        let mutable elapsed = TimeSpan.Zero
+        let timers = ResizeArray<ManualTimer>()
+        member _.Advance duration =
+            elapsed <- elapsed + duration
+            for timer in timers.ToArray() do timer.Tick()
+        member _.ActiveTimers = timers |> Seq.filter _.Active |> Seq.length
+        member _.CreatedTimers = timers.Count
+        override _.GetUtcNow() = DateTimeOffset(2026, 11, 1, 0, 0, 0, TimeSpan.Zero) + elapsed
+        override _.GetTimestamp() = elapsed.Ticks
+        override _.TimestampFrequency = TimeSpan.TicksPerSecond
+        override _.CreateTimer(callback, state, dueTime, period) =
+            if period <> Timeout.InfiniteTimeSpan then invalidArg (nameof period) "Expected a one-shot deadline."
+            let timer = new ManualTimer(callback, state, dueTime, fun () -> elapsed)
+            timers.Add timer
+            timer :> ITimer
+
+    type private PausedBody(body: string, entered: TaskCompletionSource<unit>, release: TaskCompletionSource<unit>) =
+        inherit HttpContent()
+        let mutable bodyToken = CancellationToken.None
+        let write (stream: Stream) (ct: CancellationToken) : Task = task {
+            bodyToken <- ct
+            entered.TrySetResult() |> ignore
+            do! release.Task.WaitAsync ct
+            let bytes = Encoding.UTF8.GetBytes body
+            do! stream.WriteAsync(bytes.AsMemory(), ct)
+        }
+        member _.Token = bodyToken
+        override _.TryComputeLength(length: byref<int64>) = length <- 0L; false
+        override _.SerializeToStreamAsync(stream, _) = write stream CancellationToken.None
+        override _.SerializeToStreamAsync(stream, _, ct) = write stream ct
+
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    let ``explicit deadline covers send and stalled body while caller cancellation stays distinct`` cancelCaller = task {
+        let time = ManualTime()
+        let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        use caller = new CancellationTokenSource()
+        use body = new PausedBody(success, entered, release)
+        use http = client (fun _ _ ->
+            // Sending/headers consume part of the same deadline, not a separate budget.
+            time.Advance(TimeSpan.FromSeconds 4.)
+            let response = new HttpResponseMessage(HttpStatusCode.OK)
+            response.Content <- body
+            Task.FromResult response)
+        let provider = OpenAIAdapter(connection, credentials (Ok syntheticKey), http,
+                                     requestTimeout = TimeSpan.FromSeconds 10., timeProvider = time) :> IProviderAdapter
+        let pending = provider.Send(request, caller.Token)
+        do! entered.Task
+        Assert.False(pending.IsCompleted)
+        time.Advance(TimeSpan.FromSeconds 5.)
+        Assert.False(pending.IsCompleted)
+        if cancelCaller then caller.Cancel()
+        time.Advance(TimeSpan.FromSeconds 1.)
+        // Fail synchronously if deadline propagation regresses, rather than hanging on the body gate.
+        Assert.True(body.Token.IsCancellationRequested)
+        let! result = pending
+        Assert.Equal(Error(if cancelCaller then ChatError.Cancelled else ChatError.TimedOutAfterSend), result)
+        Assert.Equal(cancelCaller, caller.IsCancellationRequested)
+        Assert.Equal(1, time.CreatedTimers)
+        Assert.Equal(0, time.ActiveTimers)
+    }
+
+    [<Fact>]
+    let ``explicit deadline before headers leaves send state unknown`` () = task {
+        let time = ManualTime()
+        let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let release = TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let mutable sendToken = CancellationToken.None
+        use http = client (fun _ ct -> sendToken <- ct; entered.SetResult(); release.Task.WaitAsync ct)
+        let provider = OpenAIAdapter(connection, credentials (Ok syntheticKey), http,
+                                     requestTimeout = TimeSpan.FromSeconds 10., timeProvider = time) :> IProviderAdapter
+        let pending = provider.Send(request, CancellationToken.None)
+        do! entered.Task
+        time.Advance(TimeSpan.FromSeconds 10.)
+        Assert.True(sendToken.IsCancellationRequested)
+        let! result = pending
+        Assert.Equal(Error ChatError.TimeoutSendStateUnknown, result)
+        Assert.Equal(0, time.ActiveTimers)
+    }
+
+    [<Fact>]
+    let ``no explicit deadline introduces no default body timeout`` () = task {
+        let time = ManualTime()
+        let entered = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        let release = TaskCompletionSource<unit>(TaskCreationOptions.RunContinuationsAsynchronously)
+        use caller = new CancellationTokenSource()
+        use http = client (fun _ _ ->
+            let response = new HttpResponseMessage(HttpStatusCode.OK)
+            response.Content <- new PausedBody(success, entered, release)
+            Task.FromResult response)
+        let provider = OpenAIAdapter(connection, credentials (Ok syntheticKey), http, timeProvider = time) :> IProviderAdapter
+        let pending = provider.Send(request, caller.Token)
+        do! entered.Task
+        time.Advance(TimeSpan.FromDays 1.)
+        Assert.False(pending.IsCompleted)
+        Assert.Equal(0, time.CreatedTimers)
+        caller.Cancel()
+        let! result = pending
+        Assert.Equal(Error ChatError.Cancelled, result)
+    }
+
+    [<Fact>]
+    let ``successful response disposes its request deadline`` () = task {
+        let time = ManualTime()
+        use http = client (fun _ _ -> Task.FromResult(response 200 success))
+        let provider = OpenAIAdapter(connection, credentials (Ok syntheticKey), http,
+                                     requestTimeout = TimeSpan.FromSeconds 10., timeProvider = time) :> IProviderAdapter
+        let! result = provider.Send(request, CancellationToken.None)
+        Assert.Equal("hello", fst (sent result))
+        Assert.Equal(1, time.CreatedTimers)
+        Assert.Equal(0, time.ActiveTimers)
+        time.Advance(TimeSpan.FromSeconds 10.)
+    }

@@ -46,7 +46,8 @@ dotnet run --project src/AIConversationStudio.Console -c Release --no-build -- -
 - 失敗時は診断JSONの `communication` に原因分類が出る。Providerのエラー本文・例外詳細は表示しない。
 - PASS・拒否も通信は成功しうる。`communication` と `posting` を個別に確認する。
 - GatewayのAttempt予約を通す。再試行・再生成・モデル代替は行わない。
-- 個別の締切が必要なら `--timeout-seconds <秒数>` を明示指定できる。既定秒数は設計未決のため未設定。
+- 個別の締切が必要なら `--timeout-seconds <秒数>` を明示指定できる。送信開始から応答本文の取得完了まで同じ締切を適用する。
+  呼び出し元のCtrl+Cとは別のキャンセル源で管理する。既定秒数は設計未決のため未設定。
 - `--history script` で台本形式も選べる（再実行は別の有料リクエストになる）。
 
 ## 停止確認

@@ -76,8 +76,7 @@ let private run options = task {
         let session, room = SessionId(ids.NewId()), RoomId(ids.NewId())
         let connection = { Id = ConnectionId(ids.NewId()); CredentialRef = options.Reference; Endpoint = OpenAIHttp.endpoint }
         use http = OpenAIHttp.createClient()
-        match options.Timeout with Some timeout -> http.Timeout <- timeout | None -> ()
-        let adapter = OpenAIAdapter(connection, WindowsCredentialStore(), http) :> IProviderAdapter
+        let adapter = OpenAIAdapter(connection, WindowsCredentialStore(), http, ?requestTimeout = options.Timeout) :> IProviderAdapter
         let participant = {
             Character = { Id = CharacterId(ids.NewId()); Name = "先生"; PersonaMarkdown = "簡潔に答える先生。"
                           DefaultModel = { ConnectionId = connection.Id; ModelId = ModelId options.Model } }
