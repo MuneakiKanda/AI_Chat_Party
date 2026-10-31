@@ -73,3 +73,4 @@ Slice 1は設計書で定めた逐次ハーネスです。イベント駆動の�
 その後、2社目のProvider、並列会話、休止・ツール、Avalonia UIを設計書の順に実装します。
 現在は自動再試行、モデルの自動代替、実ツール実行、実API通信を行いません。
 詳細は [実装状況](docs/implementation-status.md) を参照してください。
+プルリクエストのレビューは [レビュー運用規約](docs/review-guidelines.md) に従います。
