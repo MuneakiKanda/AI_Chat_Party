@@ -53,6 +53,7 @@ module SafeRequestLogger =
             inputTokens = Option.toNullable record.Usage.InputTokens
             outputTokens = Option.toNullable record.Usage.OutputTokens
             communication = communication
+            notification = string record.Notification
             posting = sprintf "%A" record.Posting
             normalization = sprintf "%A" record.Normalization
         |}

@@ -118,7 +118,10 @@ type InMemoryStore(clock: IClock) =
             lock gate (fun () ->
                 if String.IsNullOrWhiteSpace name then invalidArg (nameof name) "A speaker name is required."
                 if String.IsNullOrWhiteSpace content then invalidArg (nameof content) "A message cannot be empty."
-                append None name content (getSession id))
+                let session = getSession id
+                match session.State with
+                | SessionRunState.Running -> append None name content session
+                | _ -> invalidOp "The session is not accepting human posts.")
 
         member _.SetResting(id, characterId, resting) =
             lock gate (fun () ->

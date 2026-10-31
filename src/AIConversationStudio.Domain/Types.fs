@@ -97,6 +97,8 @@ type CommunicationResult = NotSent | Completed | Failed of ChatError | Cancelled
 type PostingResult = Posted of int64 | Passed | Rejected of RejectReason | Discarded of PostRejection | Failed | Cancelled | BudgetExceeded
 [<RequireQualifiedAccess>]
 type NormalizationResult = Speak | Pass | Rejected of RejectReason
+[<RequireQualifiedAccess>]
+type NotificationResult = NotRequired | Delivered | Failed
 type GenerationRecord = {
     GenerationId: GenerationId
     SessionId: SessionId
@@ -117,6 +119,7 @@ type GenerationRecord = {
     Communication: CommunicationResult
     Normalization: NormalizationResult option
     Posting: PostingResult
+    Notification: NotificationResult
 }
 [<RequireQualifiedAccess>]
 type AttemptEvent = Reserved of GenerationId * int | Sent of GenerationId * int | Finished of GenerationId * CommunicationResult

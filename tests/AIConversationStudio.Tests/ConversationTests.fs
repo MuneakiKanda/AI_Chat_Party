@@ -223,13 +223,19 @@ module ConversationTests =
     let ``T18 cancellation after reservation preserves budget without a sent event`` () = task {
         use cancellation = new CancellationTokenSource()
         let fixture = standard (say "Never sent") (say "Unused")
-        let registry = {
-            new IAdapterRegistry with
-                member _.Resolve _ =
-                    cancellation.Cancel()
-                    Ok(fixture.First :> IProviderAdapter)
+        let cancellingTracker = {
+            new IGenerationTracker with
+                member _.RecordAttempt event =
+                    (fixture.Tracker :> IGenerationTracker).RecordAttempt event
+                    match event with
+                    | AttemptEvent.Reserved _ -> cancellation.Cancel()
+                    | _ -> ()
+                member _.Complete record = (fixture.Tracker :> IGenerationTracker).Complete record
         }
-        let runner = reconfigure fixture fixture.Config registry
+        let registry = AdapterRegistry [firstConnection, fixture.First :> IProviderAdapter]
+        let gateway = ApiGateway(fixture.Store, registry, cancellingTracker)
+        let runner = ConversationOrchestrator(fixture.Config, fixture.Store, gateway, cancellingTracker,
+                                             fixture.Events, fixture.Clock, fixture.Ids)
         let! record = runner.RunTurn(firstId, cancellation.Token)
         Assert.Equal(1, record.AttemptCount)
         Assert.Equal(0, record.SentCount)
@@ -315,4 +321,33 @@ module ConversationTests =
         let! record = runner.RunTurn(firstId, CancellationToken.None)
         Assert.Equal(PostingResult.Posted 1L, record.Posting)
         Assert.Empty(uncaptured.Requests)
+    }
+
+    [<Fact>]
+    let ``notification failure preserves committed post and generation audit`` () = task {
+        let fixture = standard (say "Committed answer") (say "Unused")
+        let registry = AdapterRegistry [firstConnection, fixture.First :> IProviderAdapter]
+        let events = { new IMessageEvents with member _.Publish _ = failwith "Synthetic notification failure" }
+        let runner = ConversationOrchestrator(fixture.Config, fixture.Store,
+                        ApiGateway(fixture.Store, registry, fixture.Tracker), fixture.Tracker,
+                        events, fixture.Clock, fixture.Ids)
+        let! record = runner.RunTurn(firstId, CancellationToken.None)
+        Assert.Equal(PostingResult.Posted 1L, record.Posting)
+        Assert.Equal(NotificationResult.Failed, record.Notification)
+        Assert.Equal(record, Assert.Single fixture.Tracker.Records)
+        let snapshot = fixture.Store.Snapshot fixture.Config.SessionId
+        Assert.Equal(1, snapshot.AiPosts)
+        Assert.Equal(0, snapshot.ActiveGenerations)
+    }
+
+    [<Fact>]
+    let ``unregistered connection consumes no attempt`` () = task {
+        let fixture = standard (say "Unused") (say "Unused")
+        let runner = reconfigure fixture fixture.Config (AdapterRegistry [])
+        let! record = runner.RunTurn(firstId, CancellationToken.None)
+        Assert.Equal(PostingResult.Failed, record.Posting)
+        Assert.Equal(0, record.AttemptCount)
+        Assert.Equal(0, (fixture.Store.Snapshot fixture.Config.SessionId).Attempts)
+        Assert.Empty(fixture.Tracker.Attempts)
+        Assert.Empty(fixture.First.Requests)
     }

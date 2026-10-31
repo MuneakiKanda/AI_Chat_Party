@@ -176,3 +176,25 @@ module StoreTests =
             store.CreateSession(SessionId(Guid.NewGuid()), roomId, SessionLimits.defaults)) |> ignore
         store.Stop(sessionId, StopReason.UserStopped)
         store.CreateSession(SessionId(Guid.NewGuid()), roomId, SessionLimits.defaults)
+
+    [<Theory>]
+    [<InlineData(false)>]
+    [<InlineData(true)>]
+    let ``human posts are rejected after user or emergency stop`` emergency =
+        let _, store, sessionId, _ = setup SessionLimits.defaults
+        store.AddHumanMessage(sessionId, "Human", "Before stop") |> ignore
+        store.Stop(sessionId, if emergency then StopReason.EmergencyStop else StopReason.UserStopped)
+        let before = store.Snapshot sessionId
+        Assert.Throws<InvalidOperationException>(fun () ->
+            store.AddHumanMessage(sessionId, "Human", "After stop") |> ignore) |> ignore
+        Assert.Equal(before, store.Snapshot sessionId)
+
+    [<Fact>]
+    let ``human posts are rejected while draining`` () =
+        let _, store, sessionId, roomId = setup { SessionLimits.defaults with MaxAttempts = 1 }
+        beginPost store sessionId roomId |> ignore
+        store.TryReserve sessionId |> ignore
+        let before = store.Snapshot sessionId
+        Assert.Throws<InvalidOperationException>(fun () ->
+            store.AddHumanMessage(sessionId, "Human", "After drain") |> ignore) |> ignore
+        Assert.Equal(before, store.Snapshot sessionId)

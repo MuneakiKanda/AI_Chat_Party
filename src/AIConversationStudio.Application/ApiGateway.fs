@@ -19,33 +19,35 @@ type ApiGateway(budget: IAttemptBudget, registry: IAdapterRegistry, tracker: IGe
         if ct.IsCancellationRequested then
             return { empty with Communication = CommunicationResult.Cancelled }
         else
-            match budget.TryReserve sessionId with
-            | AttemptReservation.LimitReached _
-            | AttemptReservation.NotRunning StopReason.MaxApiCallsReached ->
-                return { empty with BudgetExceeded = true }
-            | AttemptReservation.NotRunning _ ->
-                return { empty with Communication = CommunicationResult.Cancelled }
-            | AttemptReservation.Reserved attempt ->
-                tracker.RecordAttempt(AttemptEvent.Reserved(request.GenerationId, attempt))
-                let mutable sent = 0
-                let! response = task {
-                    try
-                        match registry.Resolve connectionId with
-                        | Error _ -> return Error(ChatError.Unexpected "Connection is not registered.")
-                        | Ok adapter ->
+            match registry.Resolve connectionId with
+            | Error _ ->
+                let error = ChatError.Unexpected "Connection is not registered."
+                return { empty with Response = Some(Error error); Communication = CommunicationResult.Failed error }
+            | Ok adapter ->
+                match budget.TryReserve sessionId with
+                | AttemptReservation.LimitReached _
+                | AttemptReservation.NotRunning StopReason.MaxApiCallsReached ->
+                    return { empty with BudgetExceeded = true }
+                | AttemptReservation.NotRunning _ ->
+                    return { empty with Communication = CommunicationResult.Cancelled }
+                | AttemptReservation.Reserved attempt ->
+                    tracker.RecordAttempt(AttemptEvent.Reserved(request.GenerationId, attempt))
+                    let mutable sent = 0
+                    let! response = task {
+                        try
                             ct.ThrowIfCancellationRequested()
                             sent <- 1
                             tracker.RecordAttempt(AttemptEvent.Sent(request.GenerationId, attempt))
                             return! adapter.Send(request, ct)
-                    with
-                    | :? OperationCanceledException -> return Error ChatError.Cancelled
-                    | _ -> return Error(ChatError.Unexpected "Provider adapter failed.")
-                }
-                let communication =
-                    match response with
-                    | Ok _ -> CommunicationResult.Completed
-                    | Error ChatError.Cancelled -> CommunicationResult.Cancelled
-                    | Error error -> CommunicationResult.Failed error
-                tracker.RecordAttempt(AttemptEvent.Finished(request.GenerationId, communication))
-                return { Response = Some response; Communication = communication; Reserved = 1; Sent = sent; BudgetExceeded = false }
-    }
+                        with
+                        | :? OperationCanceledException -> return Error ChatError.Cancelled
+                        | _ -> return Error(ChatError.Unexpected "Provider adapter failed.")
+                    }
+                    let communication =
+                        match response with
+                        | Ok _ -> CommunicationResult.Completed
+                        | Error ChatError.Cancelled -> CommunicationResult.Cancelled
+                        | Error error -> CommunicationResult.Failed error
+                    tracker.RecordAttempt(AttemptEvent.Finished(request.GenerationId, communication))
+                    return { Response = Some response; Communication = communication; Reserved = 1; Sent = sent; BudgetExceeded = false }
+        }

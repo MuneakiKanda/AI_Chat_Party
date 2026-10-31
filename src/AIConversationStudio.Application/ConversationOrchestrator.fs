@@ -37,7 +37,7 @@ type ConversationOrchestrator(config: SessionConfiguration, store: IConversation
             StartedAt = clock.UtcNow; EndedAt = clock.UtcNow
             AttemptCount = 0; SentCount = 0; RetryCount = 0; ToolRoundTrips = 0
             Usage = Usage.unknown; Communication = CommunicationResult.NotSent
-            Normalization = None; Posting = PostingResult.Cancelled
+            Normalization = None; Posting = PostingResult.Cancelled; Notification = NotificationResult.NotRequired
         }
         match store.BeginGeneration(config.SessionId, characterId, generationId) with
         | Error reason ->
@@ -85,7 +85,13 @@ type ConversationOrchestrator(config: SessionConfiguration, store: IConversation
                             match store.TryCommit command with
                             | PostCommitResult.Committed sequence ->
                                 record <- { record with Posting = PostingResult.Posted sequence }
-                                events.Publish { SessionId = config.SessionId; RoomId = config.RoomId; GenerationId = generationId; Sequence = sequence }
+                                // Notification cannot undo a committed post or suppress its audit record.
+                                let notification =
+                                    try
+                                        events.Publish { SessionId = config.SessionId; RoomId = config.RoomId; GenerationId = generationId; Sequence = sequence }
+                                        NotificationResult.Delivered
+                                    with _ -> NotificationResult.Failed
+                                record <- { record with Notification = notification }
                             | PostCommitResult.Rejected reason ->
                                 record <- { record with Posting = PostingResult.Discarded reason }
                     | Some(Ok(ToolCalls(_, usage))) ->
