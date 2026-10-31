@@ -3,6 +3,8 @@
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="Credentials.fs" />
+    <Compile Include="OpenAIAdapter.fs" />
     <Compile Include="InMemoryStore.fs" />
     <Compile Include="MockAdapter.fs" />
     <Compile Include="Diagnostics.fs" />

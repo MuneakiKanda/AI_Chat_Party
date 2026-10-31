@@ -87,8 +87,10 @@ let run options = task {
 [<EntryPoint>]
 let main args =
     if Array.contains "--help" args then
-        printfn "%s" usage
+        printfn "%s\n\n%s" usage OpenAICommand.usage
         0
+    elif args.Length > 0 && (args[0] = "--openai" || args[0] = "--store-credential") then
+        OpenAICommand.execute (Array.toList args)
     else
         match parse (Array.toList args) with
         | Error error -> eprintfn "%s" error; 2

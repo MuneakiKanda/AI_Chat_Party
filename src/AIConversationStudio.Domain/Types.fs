@@ -39,6 +39,12 @@ type ChatError =
     | QuotaExceeded of string
     | AuthenticationFailed
     | ModelNotAvailable of string
+    | TimeoutSendStateUnknown
+    | TransportFailed
+    | ProviderRejected of statusCode: int
+    | ProviderServerError of statusCode: int
+    | InvalidResponse
+    | CredentialUnavailable
     | TimedOutAfterSend
     | StreamInterrupted
     | Cancelled
@@ -99,6 +105,12 @@ type PostingResult = Posted of int64 | Passed | Rejected of RejectReason | Disca
 type NormalizationResult = Speak | Pass | Rejected of RejectReason
 [<RequireQualifiedAccess>]
 type NotificationResult = NotRequired | Delivered | Failed
+type ProviderResponseDiagnostics = {
+    StatusCode: int
+    ErrorCode: string option
+    ErrorType: string option
+    RequestId: string option
+}
 type GenerationRecord = {
     GenerationId: GenerationId
     SessionId: SessionId
@@ -120,6 +132,7 @@ type GenerationRecord = {
     Normalization: NormalizationResult option
     Posting: PostingResult
     Notification: NotificationResult
+    ProviderResponse: ProviderResponseDiagnostics option
 }
 [<RequireQualifiedAccess>]
 type AttemptEvent = Reserved of GenerationId * int | Sent of GenerationId * int | Finished of GenerationId * CommunicationResult

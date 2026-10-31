@@ -9,6 +9,7 @@
     <Compile Include="TextPipelineTests.fs" />
     <Compile Include="StoreTests.fs" />
     <Compile Include="ConversationTests.fs" />
+    <Compile Include="OpenAIAdapterTests.fs" />
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
