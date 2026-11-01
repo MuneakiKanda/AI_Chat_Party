@@ -6,6 +6,11 @@
 
 ## 実行
 
+依存関係はnuget.orgに統一し、FSharp.CoreはSDKの暗黙版と切り離して固定しています。
+NuGet.Configがリポジトリ内の `.nuget/packages` をキャッシュに使います。
+古い `NUGET_PACKAGES` 環境変数がSDK由来の共有キャッシュを指す場合は、解除するか空の専用キャッシュへ変更してください。
+原因と再現手順は [FSharp.Core調査](docs/fsharp-core-dependency-investigation.md) を参照してください。
+
 .NET SDK 10 が必要です。`mise.toml` / `global.json` が対象バージョンを指定します。
 `mise` を利用する場合は `mise install` と `mise exec -- dotnet ...` を利用できます。
 
@@ -22,7 +27,6 @@ dotnet run --project src/AIConversationStudio.Console --no-build -- --theme "AI�
 export DOTNET_ROOT=/workspace/.dotnet
 export PATH="$DOTNET_ROOT:$PATH"
 export DOTNET_CLI_HOME=/workspace/.dotnet-home
-export NUGET_PACKAGES=/workspace/.nuget/packages
 cd /workspace/AI_Chat_Party
 ```
 
