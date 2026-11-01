@@ -61,3 +61,6 @@ coverage/
 
 # GitHub App credentials
 gha-creds-*.json
+
+# Repository-local NuGet cache (NuGet.Config).
+.nuget/

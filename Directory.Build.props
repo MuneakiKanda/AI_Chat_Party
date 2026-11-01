@@ -3,5 +3,9 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <Deterministic>true</Deterministic>
+    <!-- Pin the dependency independently of the selected compiler SDK. -->
+    <FSharpCoreImplicitPackageVersion>[10.1.403]</FSharpCoreImplicitPackageVersion>
+    <!-- SDK library-packs can contain different bytes under the same package ID/version. -->
+    <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
   </PropertyGroup>
 </Project>

@@ -168,3 +168,13 @@ AttemptSent/SentCountは既存契約上のAdapter呼び出し開始を示し、�
   README本体から環境別ドキュメントへ分離する。
 - **タイムアウト既定値の設計判断**：人が見ていない並列会話が始まる **Slice 4までに** 設計側で決める必要がある。
   本PRでは未決の既定値を新しく確定しない。
+
+
+## 依存関係管理の修正
+
+FSharp.Core 10.1.403のSDK同梱版とnuget.org版は同一ID／版でもバイト列とcontentHashが異なるため、
+空キャッシュのnuget.org復元で旧ロックのNU1403を再現した。詳細・ハッシュ・検証範囲は
+[FSharp.Core調査](fsharp-core-dependency-investigation.md) を参照。
+FSharpCoreImplicitPackageVersionの完全一致指定、SDK追加フィード無効化、nuget.orgへのSource Mapping、
+専用キャッシュ、ロック再生成、Windows/Linux CIマトリクスで再現性を確保する。
+Windowsのlocked-mode成功はCI確認待ち。署名・ハッシュ検証は無効化していない。
