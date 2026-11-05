@@ -80,3 +80,4 @@ Slice 2のOpenAI接続手順は [実API確認手順](docs/openai-smoke-test.md) 
 自動再試行、モデルの自動代替、実ツール実行は行いません。
 詳細は [実装状況](docs/implementation-status.md) を参照してください。
 プルリクエストのレビューは [レビュー運用規約](docs/review-guidelines.md) に従います。
+Issue・PR の待ちラベルは [ラベルの運用ルール](docs/labels.md) に従います。
